@@ -1,5 +1,9 @@
 pragma solidity ^0.4.24;
+/*
+项目部署过程：
+1：
 
+*/
 /**
  * @title SafeMath
  * @dev Math operations with safety checks that throw on error
@@ -71,8 +75,18 @@ contract SpreadInfo {
 
     function registerUpAccount(address _upAccount) public {
         require (down2upMap[msg.sender] == address(0));
+        require (!checkRing(_upAccount)); // 不可形成循环推荐
         down2upMap[msg.sender] = _upAccount;
         up2downSet[_upAccount].push(msg.sender);
+    }
+
+    function checkRing(address _upAccount) private returns(bool) {
+        address upAccount = down2upMap[_upAccount];
+        while(upAccount != address(0)) {
+            if (upAccount == msg.sender) return true;
+            upAccount = down2upMap[upAccount];
+        }
+        return false;
     }
 
     function getUpAccount(address account) view public returns(address) {
@@ -100,17 +114,20 @@ contract ExchangeMiner is Ownable {
         uint256 startValidBlock;
     }
 
-    uint256 public constant MinAddressCount = 7;
+    uint256 public constant MinAddressCount = 10;
     uint256 public genesisReward = 5e18;
     uint256 public genesisBlock = 0;
     RewardSetting[] public rewardSettingList;
     address public oexSwapAddress;
     uint256 constant OEXAssetId = 0;
+    uint256 constant TimeSpan = 1200;  // 挖矿规则之间必须至少间隔1200个区块，即一个小时
     uint256 public upAccountRewardFactor = 20;
     SpreadInfo public spreadInfo;
     mapping(uint256 => uint256) public block2OEXAmountMap;  // 区块对应的总的oex交易量，如区块高度为100时，总的OEX交易量为1000
     mapping(uint256 => mapping(address => uint256)) public block2Account2OEXAmountMap;  // 区块对应某个账户的oex交易量，如账户A在区块高度为100的时候交易了100个OEX
     mapping(address => uint256) public accountWithdrawMap;  // 记录账户最新领取激励的区块高度
+    mapping(address => uint256) private accountLastBlockNumberMap;  // 记录账户最近一次需要计算奖励的区块高度
+    mapping(address => uint256) private accountAmountMap;  // 记录账户可提现奖励
 
     mapping(address => uint256) public accountSpreadRewardMap;  // 记录账户总领取的推广激励
 
@@ -147,10 +164,10 @@ contract ExchangeMiner is Ownable {
     // 设置新的挖矿奖励时，新区块高度必须高于当前区块28800个块，即必须至少提前一天设置新的区块奖励；
     // 同时，每个新区块奖励必须间隔一天以上，以让矿工有反应时间
     function setReward(uint256 _newReward, uint256 _startValidBlock) public onlyOwner {
-        require(_startValidBlock - block.number >= 28800);  // 至少提前1天设置，给矿工留出调整时间
+        require(_startValidBlock - block.number >= TimeSpan);  // 至少提前1天设置，给矿工留出调整时间
         if (rewardSettingList.length > 0) {
             RewardSetting memory lastRewardSetting = rewardSettingList[rewardSettingList.length - 1];
-            require(_startValidBlock >= lastRewardSetting.startValidBlock + 28800);
+            require(_startValidBlock >= lastRewardSetting.startValidBlock + TimeSpan);
         }
         RewardSetting memory rewardSetting = RewardSetting({reward: _newReward, startValidBlock: _startValidBlock});
         rewardSettingList.push(rewardSetting);
@@ -176,22 +193,22 @@ contract ExchangeMiner is Ownable {
         if (assetAddressCountMap[assetId] >= MinAddressCount) {
             block2OEXAmountMap[block.number] = block2OEXAmountMap[block.number].add(amount);
             block2Account2OEXAmountMap[block.number][account] = block2Account2OEXAmountMap[block.number][account].add(amount);
+            uint256 lastBlockNumber = accountLastBlockNumberMap[account];
+            if (lastBlockNumber > 0 && lastBlockNumber < block.number) {
+                uint256 totalOexOfBlock = block2OEXAmountMap[lastBlockNumber];
+                uint256 myOexOfBlock = block2Account2OEXAmountMap[lastBlockNumber][msg.sender];
+                if (myOexOfBlock > 0) {
+                    uint256 rewardOfBlock = getReward(lastBlockNumber);
+                    uint256 curOEXOfBlock = rewardOfBlock.mul(myOexOfBlock).div(totalOexOfBlock);
+                    accountAmountMap[account] = accountAmountMap[account].add(curOEXOfBlock);
+                }
+            }
+            accountLastBlockNumberMap[account] = block.number;
         }
     }
 
     function getAmount() view public returns(uint256) {
-        uint256 startBlockNumber = accountWithdrawMap[msg.sender] == 0 ? genesisBlock : accountWithdrawMap[msg.sender] + 1;
-        uint256 totalOEXAmont = 0;
-        for (uint256 i = startBlockNumber; i < block.number; i++) {
-            uint256 oexOfBlock = block2OEXAmountMap[i];
-            uint256 myOexOfBlock = block2Account2OEXAmountMap[i][msg.sender];
-            if (myOexOfBlock > 0) {
-                uint256 rewardOfBlock = getReward(i);
-                uint256 curOEXOfBlock = rewardOfBlock.mul(myOexOfBlock).div(oexOfBlock);
-                totalOEXAmont = totalOEXAmont.add(curOEXOfBlock);
-            }
-        }
-        return totalOEXAmont;
+        return accountLastBlockNumberMap[msg.sender];
     }
 
     function withdraw() public {
@@ -342,6 +359,12 @@ contract OEXSwap is Ownable {
 
         if (pairTotalLiquidMap[pairIndex] == 0) {
             pairMap[pair.firstAssetId][pair.secondAssetId] = 0;
+            // if (pairIndex != pairList.length)  { // 将最后一个交易对复制到被移除的交易对中
+            //     Pair memory lastPair = pairList[pairList.length - 1];
+            //     pairList[pairIndex] = lastPair;
+            //     pairMap[lastPair.firstAssetId][lastPair.secondAssetId] = pairIndex + 1;
+            // }
+            // pairList.length--;
         }
         msg.sender.transfer(pair.firstAssetId, removedFirstAssetValue);
         msg.sender.transfer(pair.secondAssetId, removedSecondAssetValue);
