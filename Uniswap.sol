@@ -129,7 +129,8 @@ contract ExchangeMiner is Ownable {
     mapping(address => uint256) private accountLastBlockNumberMap;  // 记录账户最近一次需要计算奖励的区块高度
     mapping(address => uint256) private accountAmountMap;  // 记录账户可提现奖励
 
-    mapping(address => uint256) public accountSpreadRewardMap;  // 记录账户总领取的推广激励
+    mapping(address => uint256) public accountSpreadRewardMap;  // 记录一级账户总领取的推广激励
+    mapping(address => uint256) public accountSecondSpreadRewardMap;  // 单独记录二级账户的总领取的推广激励
 
     mapping(uint256 => mapping(address => bool)) public assetAddressMap;  // 记录参与某个资产交易的地址数量
     mapping(uint256 => uint256) public assetAddressCountMap; // 记录参与某资产交易的地址数量
@@ -164,7 +165,7 @@ contract ExchangeMiner is Ownable {
     // 设置新的挖矿奖励时，新区块高度必须高于当前区块28800个块，即必须至少提前一天设置新的区块奖励；
     // 同时，每个新区块奖励必须间隔一天以上，以让矿工有反应时间
     function setReward(uint256 _newReward, uint256 _startValidBlock) public onlyOwner {
-        require(_startValidBlock - block.number >= TimeSpan);  // 至少提前1天设置，给矿工留出调整时间
+        require(_startValidBlock - block.number >= TimeSpan);  // 至少提前一段时间设置，给矿工留出调整时间
         if (rewardSettingList.length > 0) {
             RewardSetting memory lastRewardSetting = rewardSettingList[rewardSettingList.length - 1];
             require(_startValidBlock >= lastRewardSetting.startValidBlock + TimeSpan);
@@ -173,6 +174,7 @@ contract ExchangeMiner is Ownable {
         rewardSettingList.push(rewardSetting);
     }
 
+    // 根据区块高度获取区块的总奖励数
     function getReward(uint256 _blockNumber) view public returns(uint256) {
         int256 length = int256(rewardSettingList.length);
         if (length == 0) return 0;
@@ -184,7 +186,7 @@ contract ExchangeMiner is Ownable {
         }
         return 0;
     }
-
+    // 交易合约将交易信息加入交易统计中，包括当前区块总的交易量以及某账号在本区块的交易量
     function addMiningInfo(address account, uint256 amount, uint256 assetId) external onlyOexSwap {
         if (!assetAddressMap[assetId][account]) {
             assetAddressMap[assetId][account] = true;
@@ -208,7 +210,16 @@ contract ExchangeMiner is Ownable {
     }
 
     function getAmount() view public returns(uint256) {
-        return accountLastBlockNumberMap[msg.sender];
+        return accountAmountMap[msg.sender];
+    }
+
+    function withdrawSpreadReward() public returns(uint256) {
+        uint256 reward = accountSpreadRewardMap[msg.sender];
+        reward = reward.add(accountSecondSpreadRewardMap[msg.sender]);
+        accountSpreadRewardMap[msg.sender] = 0;
+        accountSecondSpreadRewardMap[msg.sender] = 0;
+        msg.sender.transfer(OEXAssetId, reward);
+        return reward;
     }
 
     function withdraw() public {
@@ -222,6 +233,13 @@ contract ExchangeMiner is Ownable {
             uint256 upAccountReward = totalOEXAmont.mul(upAccountRewardFactor).div(100);
             upAccount.transfer(OEXAssetId, upAccountReward);
             accountSpreadRewardMap[upAccount] = accountSpreadRewardMap[upAccount].add(upAccountReward);
+
+            upAccount = spreadInfo.getUpAccount(upAccount);
+            if (upAccount != address(0)) {
+                upAccountReward = totalOEXAmont.mul(upAccountRewardFactor / 2).div(100);
+                upAccount.transfer(OEXAssetId, upAccountReward);
+                accountSecondSpreadRewardMap[upAccount] = accountSecondSpreadRewardMap[upAccount].add(upAccountReward);
+            }
         }
     }
 }
@@ -282,7 +300,7 @@ contract OEXSwap is Ownable {
         stopMiningNumber = _stopMiningNumber;
     }
 
-    function isInMiningDuration() public returns(bool) {
+    function isInMiningDuration() view public returns(bool) {
         return block.number >= startMiningNumber && block.number < stopMiningNumber;
     }
     // 功能：
