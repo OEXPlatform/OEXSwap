@@ -126,13 +126,17 @@ contract ExchangeMiner is Ownable {
     mapping(uint256 => uint256) public block2OEXAmountMap;  // 区块对应的总的oex交易量，如区块高度为100时，总的OEX交易量为1000
     mapping(uint256 => mapping(address => uint256)) public block2Account2OEXAmountMap;  // 区块对应某个账户的oex交易量，如账户A在区块高度为100的时候交易了100个OEX
     mapping(address => uint256) public accountWithdrawMap;  // 记录账户最新领取激励的区块高度
-    mapping(address => uint256) private accountLastBlockNumberMap;  // 记录账户最近一次需要计算奖励的区块高度
-    mapping(address => uint256) private accountAmountMap;  // 记录账户可提现奖励
+    mapping(address => uint256) public accountLastBlockNumberMap;  // 记录账户最近一次需要计算奖励的区块高度
+    mapping(address => uint256) public accountAmountMap;  // 记录账户可提现奖励
+    mapping(address => mapping(address => uint256)) public upAccount2Accout2RewardMap;  // 记录下级账户（包括二级）给本账户贡献的奖励数
+    
 
     mapping(address => uint256) public accountSpreadRewardMap;  // 记录一级账户总领取的推广激励
     mapping(address => uint256) public accountSecondSpreadRewardMap;  // 单独记录二级账户的总领取的推广激励
+    mapping(address => uint256) public accountRewardDebtMap;  // 记录账户已经提取的奖励数
+    
 
-    mapping(uint256 => mapping(address => bool)) public assetAddressMap;  // 记录参与某个资产交易的地址数量
+    mapping(uint256 => mapping(address => bool)) public assetAddressMap;  // 记录参与某个资产交易的地址
     mapping(uint256 => uint256) public assetAddressCountMap; // 记录参与某资产交易的地址数量
 
     modifier onlyOexSwap() {
@@ -154,7 +158,7 @@ contract ExchangeMiner is Ownable {
     }
 
     // 用户可直接向合约账号转账
-    function transferable() public returns(bool) {
+    function transferable() view public returns(bool) {
         return true;
     }
 
@@ -198,7 +202,7 @@ contract ExchangeMiner is Ownable {
             uint256 lastBlockNumber = accountLastBlockNumberMap[account];
             if (lastBlockNumber > 0 && lastBlockNumber < block.number) {
                 uint256 totalOexOfBlock = block2OEXAmountMap[lastBlockNumber];
-                uint256 myOexOfBlock = block2Account2OEXAmountMap[lastBlockNumber][msg.sender];
+                uint256 myOexOfBlock = block2Account2OEXAmountMap[lastBlockNumber][account];
                 if (myOexOfBlock > 0) {
                     uint256 rewardOfBlock = getReward(lastBlockNumber);
                     uint256 curOEXOfBlock = rewardOfBlock.mul(myOexOfBlock).div(totalOexOfBlock);
@@ -216,10 +220,19 @@ contract ExchangeMiner is Ownable {
     function withdrawSpreadReward() public returns(uint256) {
         uint256 reward = accountSpreadRewardMap[msg.sender];
         reward = reward.add(accountSecondSpreadRewardMap[msg.sender]);
-        accountSpreadRewardMap[msg.sender] = 0;
-        accountSecondSpreadRewardMap[msg.sender] = 0;
-        msg.sender.transfer(OEXAssetId, reward);
+
+        uint256 rewardDebt = accountRewardDebtMap[msg.sender];
+        msg.sender.transfer(OEXAssetId, reward.sub(rewardDebt));
+        accountRewardDebtMap[msg.sender] = reward;
         return reward;
+    }
+
+    function pendingSpreadReward() view public returns(uint256) {
+        uint256 reward = accountSpreadRewardMap[msg.sender];
+        reward = reward.add(accountSecondSpreadRewardMap[msg.sender]);
+
+        uint256 rewardDebt = accountRewardDebtMap[msg.sender];
+        return reward.sub(rewardDebt);
     }
 
     function withdraw() public {
@@ -228,17 +241,19 @@ contract ExchangeMiner is Ownable {
         msg.sender.transfer(OEXAssetId, totalOEXAmont);
         accountWithdrawMap[msg.sender] = block.number - 1;
 
-        address upAccount = spreadInfo.getUpAccount(msg.sender);
-        if (spreadInfo != address(0) && upAccount != address(0)) {
-            uint256 upAccountReward = totalOEXAmont.mul(upAccountRewardFactor).div(100);
-            upAccount.transfer(OEXAssetId, upAccountReward);
-            accountSpreadRewardMap[upAccount] = accountSpreadRewardMap[upAccount].add(upAccountReward);
-
-            upAccount = spreadInfo.getUpAccount(upAccount);
+        if (spreadInfo != address(0)) {
+            address upAccount = spreadInfo.getUpAccount(msg.sender);
             if (upAccount != address(0)) {
-                upAccountReward = totalOEXAmont.mul(upAccountRewardFactor / 2).div(100);
-                upAccount.transfer(OEXAssetId, upAccountReward);
-                accountSecondSpreadRewardMap[upAccount] = accountSecondSpreadRewardMap[upAccount].add(upAccountReward);
+                uint256 upAccountReward = totalOEXAmont.mul(upAccountRewardFactor).div(100);
+                //upAccount.transfer(OEXAssetId, upAccountReward);
+                accountSpreadRewardMap[upAccount] = accountSpreadRewardMap[upAccount].add(upAccountReward);
+
+                upAccount = spreadInfo.getUpAccount(upAccount);
+                if (upAccount != address(0)) {
+                    upAccountReward = totalOEXAmont.mul(upAccountRewardFactor / 2).div(100);
+                    //upAccount.transfer(OEXAssetId, upAccountReward);
+                    accountSecondSpreadRewardMap[upAccount] = accountSecondSpreadRewardMap[upAccount].add(upAccountReward);
+                }
             }
         }
     }
@@ -281,7 +296,7 @@ contract OEXSwap is Ownable {
     }
 
     // 用户不可直接向合约账号转账
-    function transferable() public returns(bool) {
+    function transferable() view public returns(bool) {
         return false;
     }
 
