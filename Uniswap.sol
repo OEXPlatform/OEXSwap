@@ -128,14 +128,13 @@ contract ExchangeMiner is Ownable {
     mapping(address => uint256) public accountWithdrawMap;  // 记录账户最新领取激励的区块高度
     mapping(address => uint256) public accountLastBlockNumberMap;  // 记录账户最近一次需要计算奖励的区块高度
     mapping(address => uint256) public accountAmountMap;  // 记录账户可提现奖励
-    mapping(address => mapping(address => uint256)) public upAccount2Accout2RewardMap;  // 记录下级账户（包括二级）给本账户贡献的奖励数
     
 
     mapping(address => uint256) public accountSpreadRewardMap;  // 记录一级账户总领取的推广激励
     mapping(address => uint256) public accountSecondSpreadRewardMap;  // 单独记录二级账户的总领取的推广激励
     mapping(address => uint256) public accountRewardDebtMap;  // 记录账户已经提取的奖励数
+    mapping(address => mapping(address => uint256)) public upAccount2Accout2RewardMap;  // 记录下级账户（包括二级）给本账户贡献的奖励数
     
-
     mapping(uint256 => mapping(address => bool)) public assetAddressMap;  // 记录参与某个资产交易的地址
     mapping(uint256 => uint256) public assetAddressCountMap; // 记录参与某资产交易的地址数量
 
@@ -236,8 +235,9 @@ contract ExchangeMiner is Ownable {
     }
 
     function withdraw() public {
-        uint256 totalOEXAmont = getAmount();
+        uint256 totalOEXAmont = accountAmountMap[msg.sender];
         require(this.balanceex(OEXAssetId) >= totalOEXAmont);
+        accountAmountMap[msg.sender] = 0;
         msg.sender.transfer(OEXAssetId, totalOEXAmont);
         accountWithdrawMap[msg.sender] = block.number - 1;
 
@@ -245,14 +245,14 @@ contract ExchangeMiner is Ownable {
             address upAccount = spreadInfo.getUpAccount(msg.sender);
             if (upAccount != address(0)) {
                 uint256 upAccountReward = totalOEXAmont.mul(upAccountRewardFactor).div(100);
-                //upAccount.transfer(OEXAssetId, upAccountReward);
                 accountSpreadRewardMap[upAccount] = accountSpreadRewardMap[upAccount].add(upAccountReward);
+                upAccount2Accout2RewardMap[upAccount][msg.sender] = upAccount2Accout2RewardMap[upAccount][msg.sender].add(upAccountReward);
 
                 upAccount = spreadInfo.getUpAccount(upAccount);
                 if (upAccount != address(0)) {
                     upAccountReward = totalOEXAmont.mul(upAccountRewardFactor / 2).div(100);
-                    //upAccount.transfer(OEXAssetId, upAccountReward);
                     accountSecondSpreadRewardMap[upAccount] = accountSecondSpreadRewardMap[upAccount].add(upAccountReward);
+                    upAccount2Accout2RewardMap[upAccount][msg.sender] = upAccount2Accout2RewardMap[upAccount][msg.sender].add(upAccountReward);
                 }
             }
         }
